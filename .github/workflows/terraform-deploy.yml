@@ -1,0 +1,99 @@
+name: Deploy Free-Tier Infrastructure # Update the names for Prod / Staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      region:
+        description: 'AWS Region'
+        required: true
+        default: 'us-east-1'
+        type: string
+      key_name:
+        description: 'EC2 Key Pair Name'
+        required: true
+        type: string
+      ssh_allowed_cidr:
+        description: 'SSH Allowed CIDR (e.g., YOUR.IP/32)'
+        required: true
+        type: string
+      alerts_email:
+        description: 'Email for CloudWatch Alerts'
+        required: true
+        type: string
+
+jobs:
+  terraform:
+    name: 'Terraform Deploy'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./free-tier
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.0
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ inputs.region }}
+
+      - name: Create terraform.tfvars
+        run: |
+          cat > terraform.tfvars <<EOF
+          region           = "${{ inputs.region }}"
+          key_name         = "${{ inputs.key_name }}"
+          ssh_allowed_cidr = "${{ inputs.ssh_allowed_cidr }}"
+          alerts_email     = "${{ inputs.alerts_email }}"
+          EOF
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan
+        continue-on-error: false
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+
+      - name: Get Terraform Outputs
+        id: outputs
+        run: |
+          echo "vpc_id=$(terraform output -raw vpc_id)" >> $GITHUB_OUTPUT
+          echo "app_instance_id=$(terraform output -raw app_instance_id)" >> $GITHUB_OUTPUT
+          echo "app_instance_public_ip=$(terraform output -raw app_instance_public_ip)" >> $GITHUB_OUTPUT
+          echo "s3_bucket_name=$(terraform output -raw s3_bucket_name)" >> $GITHUB_OUTPUT
+
+      - name: Output Summary
+        run: |
+          echo "## Deployment Successful! 🎉" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Infrastructure Details" >> $GITHUB_STEP_SUMMARY
+          echo "- **VPC ID**: ${{ steps.outputs.outputs.vpc_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **EC2 Instance ID**: ${{ steps.outputs.outputs.app_instance_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Public IP**: ${{ steps.outputs.outputs.app_instance_public_ip }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **S3 Bucket**: ${{ steps.outputs.outputs.s3_bucket_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### SSH Access" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "ssh -i /path/to/${{ inputs.key_name }}.pem ec2-user@${{ steps.outputs.outputs.app_instance_public_ip }}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload Terraform State
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: terraform-state
+          path: free-tier/terraform.tfstate
+          retention-days: 30
