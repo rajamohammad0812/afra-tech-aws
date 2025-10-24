@@ -29,7 +29,7 @@ data "aws_ami" "amazon_linux_2023" {
 }
 
 locals {
-  project_name = "afratech"
+  project_name = "afra"
   environment  = "free-tier"
 
   common_tags = {
